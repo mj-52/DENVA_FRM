@@ -5,6 +5,10 @@ on:
   schedule:             # Automatic re-run every 6 hours
     - cron: "0 */6 * * *"  # At minute 0, every 6th hour
 
+concurrency:
+  group: i_anda_xg
+  cancel-in-progress: true
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -26,12 +30,7 @@ jobs:
       run: |
         unzip pocketoptionapi.zip -d ./
 
-
     - name: Run the bot
       env:
         OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
-        OANDA_ID: ${{ secrets.OANDA_ID }}
-        PO_SSID: ${{ secrets.PO_SSID }}
-
-      run: |
-        python main_xg.py
+        OANDA_ID: ${{
