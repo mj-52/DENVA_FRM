@@ -33,4 +33,7 @@ jobs:
     - name: Run the bot
       env:
         OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
-        OANDA_ID: ${{
+        OANDA_ID: ${{ secrets.OANDA_ID }}
+        PO_SSID: ${{ secrets.PO_SSID }}
+      run: |
+        python main_xg.py
