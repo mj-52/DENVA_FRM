@@ -27,7 +27,7 @@ expiration = 60
 INITIAL_AMOUNT = 1
 MARTINGALE_LEVEL = 3
 MIN_ACTIVE_PAIRS = 1
-PROB_THRESHOLD = 0.6
+PROB_THRESHOLD = 0.76
 
 api = PocketOption(ssid, demo)
 api.connect()
@@ -35,7 +35,7 @@ time.sleep(5)
 
 FEATURE_COLS = ['RSI', 'k_percent', 'r_percent', 'MACD', 'MACD_EMA', 'Price_Rate_Of_Change']
 
-def get_oanda_candles(pair, granularity="M1", count=500):
+def get_oanda_candles(pair, granularity="M1", count=1000):
     try:
         client = oandapyV20.API(access_token=ACCESS_TOKEN)
         params = {"granularity": granularity, "count": count}
@@ -118,7 +118,7 @@ def train_and_predict(df):
 
  
     # global_value.logger("📊 Latest data preview:\n" + str(df.tail(1)[['timestamp', 'close','RSI', 'SUPERT_10_3.0', 'SUPERTd_10_3.0']]), "INFO")
-    global_value.logger("📊 Latest data preview:\n" + str(df.shape), "INFO")
+    # global_value.logger("📊 Latest data preview:\n" + str(df.shape), "INFO")
     
     model = XGBClassifier(n_estimators=100, eval_metric='logloss', random_state=0)
     model.fit(X_train, y_train)
@@ -131,6 +131,10 @@ def train_and_predict(df):
     latest_dir = df.iloc[-1]['SUPERTd_10_3.0']
     current_trend = df.iloc[-1]['SUPERT_10_3.0']
     past_trend = df.iloc[-3]['SUPERT_10_3.0']
+    latest_rsi = df.iloc[-1]['RSI']
+    if latest_rsi > 70 or latest_rsi < 30:
+        global_value.logger(f"⏭️ Skipping trade due to RSI filter (RSI={latest_rsi:.2f})", "INFO")
+        return None
     
     if call_conf > PROB_THRESHOLD:
         if latest_dir == 1 and current_trend != past_trend:
@@ -254,4 +258,3 @@ def main_trading_loop():
 
 if __name__ == "__main__":
     main_trading_loop()
-
