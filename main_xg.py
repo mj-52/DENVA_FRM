@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from pocketoptionapi.stable_api import PocketOption
 import pocketoptionapi.global_value as global_value
-from xgboost import XGBClassifier
+from sklearn.ensemble import RandomForestClassifier
 import oandapyV20
 import oandapyV20.endpoints.instruments as instruments
 
@@ -21,13 +21,12 @@ ssid = os.getenv("PO_SSID")
 demo = True
 
 # Bot Settings
-min_payout = 70
-period = 60  
-expiration = 60
+min_payout = 60
+period = 300
+expiration = 300
 INITIAL_AMOUNT = 1
 MARTINGALE_LEVEL = 3
-MIN_ACTIVE_PAIRS = 1
-PROB_THRESHOLD = 0.76
+PROB_THRESHOLD = 0.57
 
 api = PocketOption(ssid, demo)
 api.connect()
@@ -35,7 +34,7 @@ time.sleep(5)
 
 FEATURE_COLS = ['RSI', 'k_percent', 'r_percent', 'MACD', 'MACD_EMA', 'Price_Rate_Of_Change']
 
-def get_oanda_candles(pair, granularity="M1", count=1000):
+def get_oanda_candles(pair, granularity="M5", count=500):
     try:
         client = oandapyV20.API(access_token=ACCESS_TOKEN)
         params = {"granularity": granularity, "count": count}
@@ -74,23 +73,6 @@ def get_payout():
         global_value.logger(f"[ERROR]: Failed to parse payout data - {str(e)}", "ERROR")
         return False
 
-def get_df():
-    try:
-        for i, pair in enumerate(global_value.pairs, 1):
-            oanda_pair = pair[:3] + "_" + pair[3:]  # e.g., EURUSD → EUR_USD
-            df = get_oanda_candles(oanda_pair, granularity="M1", count=100)
-
-            if df is not None:
-                global_value.pairs[pair]['dataframe'] = df
-                global_value.logger(f"[{i}/{len(global_value.pairs)}] {pair}: Fetched {len(df)} candles from OANDA", "INFO")
-            else:
-                global_value.logger(f"[{i}/{len(global_value.pairs)}] {pair}: Failed to fetch candles", "ERROR")
-            time.sleep(1)
-        return True
-    except Exception as e:
-        global_value.logger(f"[ERROR]: Error in get_df() - {str(e)}", "ERROR")
-        return False
-
 def prepare_data(df):
     df = df[['time', 'open', 'high', 'low', 'close']]
     df.rename(columns={'time': 'timestamp'}, inplace=True)
@@ -110,17 +92,34 @@ def prepare_data(df):
 
     df['Prediction'] = (df['close'].shift(-1) > df['close']).astype(int)
     df.dropna(inplace=True)
+    df.reset_index(drop=True, inplace=True)  # <-- Add this line
     return df
+
+def pivotid(df1, l, n1, n2):
+    if l - n1 < 0 or l + n2 >= len(df1):
+        return 0
+    pividlow = 1
+    pividhigh = 1
+    for i in range(l - n1, l + n2 + 1):
+        if df1.low[l] > df1.low[i]:
+            pividlow = 0
+        if df1.high[l] < df1.high[i]:
+            pividhigh = 0
+    if pividlow and pividhigh:
+        return 3
+    elif pividlow:
+        return 1
+    elif pividhigh:
+        return 2
+    else:
+        return 0
 
 def train_and_predict(df):
     X_train = df[FEATURE_COLS].iloc[:-1]
     y_train = df['Prediction'].iloc[:-1]
 
- 
-    # global_value.logger("📊 Latest data preview:\n" + str(df.tail(1)[['timestamp', 'close','RSI', 'SUPERT_10_3.0', 'SUPERTd_10_3.0']]), "INFO")
     # global_value.logger("📊 Latest data preview:\n" + str(df.shape), "INFO")
-    
-    model = XGBClassifier(n_estimators=100, eval_metric='logloss', random_state=0)
+    model = RandomForestClassifier(n_estimators=100, oob_score=True, criterion="gini", random_state=0)
     model.fit(X_train, y_train)
 
     X_test = df[FEATURE_COLS].iloc[[-1]]
@@ -131,26 +130,50 @@ def train_and_predict(df):
     latest_dir = df.iloc[-1]['SUPERTd_10_3.0']
     current_trend = df.iloc[-1]['SUPERT_10_3.0']
     past_trend = df.iloc[-3]['SUPERT_10_3.0']
-    latest_rsi = df.iloc[-1]['RSI']
-    if latest_rsi > 70 or latest_rsi < 30:
-        global_value.logger(f"⏭️ Skipping trade due to RSI filter (RSI={latest_rsi:.2f})", "INFO")
+    rsi = df.iloc[-1]['RSI']
+
+    # Calculate pivots
+    df['pivot'] = df.apply(lambda x: pivotid(df, x.name, 10, 10), axis=1)
+    # Find last pivot high before current candle
+    pivot_highs = df[df['pivot'] == 2]
+    if not pivot_highs.empty:
+        latest_pivot_high = pivot_highs.iloc[-1]['high']
+    else:
+        latest_pivot_high = None
+    # Find last pivot low before current candle
+    pivot_lows = df[df['pivot'] == 1]
+    if not pivot_lows.empty:
+        latest_pivot_low = pivot_lows.iloc[-1]['low']
+    else:
+        latest_pivot_low = None
+
+    current_price = df.iloc[-1]['close']
+
+    # Prevent trading in overbought/oversold markets
+    if rsi > 70 or rsi < 30:
+        global_value.logger(f"⏭️ Skipping trade due to RSI ({rsi:.2f}) being overbought/oversold.", "INFO")
         return None
-    
+
+    # Add trend check: skip if current trend != past trend
+    if current_trend != past_trend:
+        global_value.logger(f"⏭️ Skipping trade due to trend change (current: {current_trend}, past: {past_trend})", "INFO")
+        return None
+
     if call_conf > PROB_THRESHOLD:
-        if latest_dir == 1 and current_trend != past_trend:
+        if latest_dir == 1 and latest_pivot_high is not None and current_price < latest_pivot_high:
             decision = "call"
             emoji = "🟢"
             confidence = call_conf
         else:
-            global_value.logger(f"⏭️ Skipping CALL ({call_conf:.2%}) due to trend mismatch or flat Supertrend.", "INFO")
+            global_value.logger(f"⏭️ Skipping CALL ({call_conf:.2%}) due to trend mismatch or price above pivot high.", "INFO")
             return None
     elif put_conf > PROB_THRESHOLD:
-        if latest_dir == -1 and current_trend != past_trend:
+        if latest_dir == -1 and latest_pivot_low is not None and current_price > latest_pivot_low:
             decision = "put"
             emoji = "🔴"
             confidence = put_conf
         else:
-            global_value.logger(f"⏭️ Skipping PUT ({put_conf:.2%}) due to trend mismatch or flat Supertrend.", "INFO")
+            global_value.logger(f"⏭️ Skipping PUT ({put_conf:.2%}) due to trend mismatch or price below pivot low.", "INFO")
             return None
     else:
         if call_conf > put_conf:
