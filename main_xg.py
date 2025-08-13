@@ -22,8 +22,8 @@ demo = True
 
 # Bot Settings
 min_payout = 60
-period = 300
-expiration = 300
+period = 60
+expiration = 60
 INITIAL_AMOUNT = 1
 MARTINGALE_LEVEL = 3
 PROB_THRESHOLD = 0.57
@@ -34,7 +34,7 @@ time.sleep(5)
 
 FEATURE_COLS = ['RSI', 'k_percent', 'r_percent', 'MACD', 'MACD_EMA', 'Price_Rate_Of_Change']
 
-def get_oanda_candles(pair, granularity="M5", count=500):
+def get_oanda_candles(pair, granularity="M1", count=500):
     try:
         client = oandapyV20.API(access_token=ACCESS_TOKEN)
         params = {"granularity": granularity, "count": count}
@@ -155,8 +155,8 @@ def train_and_predict(df):
         return None
 
     # Add trend check: skip if current trend != past trend
-    if current_trend != past_trend:
-        global_value.logger(f"⏭️ Skipping trade due to trend change (current: {current_trend}, past: {past_trend})", "INFO")
+    if current_trend == past_trend:
+        global_value.logger(f"⏭️ Skipping trade due to flat trend (current: {current_trend}, past: {past_trend})", "INFO")
         return None
 
     if call_conf > PROB_THRESHOLD:
@@ -222,7 +222,7 @@ def martingale_strategy(pair, action):
     else:
         global_value.logger("LOSS. Resetting.", "INFO")
 
-def wait_until_next_candle(period_seconds=300, seconds_before=15):
+def wait_until_next_candle(period_seconds=300, seconds_before=20):
     while True:
         now = datetime.now(timezone.utc)
         next_candle = ((now.timestamp() // period_seconds) + 1) * period_seconds
@@ -246,8 +246,8 @@ def main_trading_loop():
             time.sleep(5)
             continue
 
-        wait_until_next_candle(period_seconds=period, seconds_before=15)
-        global_value.logger("🕒 15 seconds before candle. Preparing data and predictions...", "INFO")
+        wait_until_next_candle(period_seconds=period, seconds_before=20)
+        global_value.logger("🕒 20 seconds before candle. Preparing data and predictions...", "INFO")
 
         selected_pair = None
         selected_action = None
