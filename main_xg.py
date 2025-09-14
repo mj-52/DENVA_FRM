@@ -25,8 +25,8 @@ min_payout = 80
 period = 300
 expiration = 300
 INITIAL_AMOUNT = 1
-MARTINGALE_LEVEL = 3
-PROB_THRESHOLD = 0.66
+MARTINGALE_LEVEL = 1
+PROB_THRESHOLD = 0.76
 
 api = PocketOption(ssid, demo)
 api.connect()
@@ -51,7 +51,7 @@ def get_oanda_candles(pair, granularity="M5", count=500):
         df['time'] = pd.to_datetime(df['time'])
         return df
     except Exception as e:
-        global_value.logger(f"[ERROR]: OANDA candle fetch failed for {pair} - {str(e)}", "ERROR")
+        global_value.logger(f"[ERROR]: OANDA candle fetch failed for {pair} ", "ERROR")
         return None
 
 def get_payout():
@@ -154,10 +154,10 @@ def train_and_predict(df):
         global_value.logger(f"⏭️ Skipping trade due to RSI ({rsi:.2f}) being overbought/oversold.", "INFO")
         return None
 
-    # # Add trend check: skip if current trend != past trend
-    # if current_trend == past_trend:
-    #     global_value.logger(f"⏭️ Skipping trade due to flat trend (current: {current_trend}, past: {past_trend})", "INFO")
-    #     return None
+    # Add trend check: skip if current trend != past trend
+    if current_trend == past_trend:
+        global_value.logger(f"⏭️ Skipping trade due to flat trend (current: {current_trend}, past: {past_trend})", "INFO")
+        return None
 
     if call_conf > PROB_THRESHOLD:
         if latest_dir == 1 and latest_pivot_high is not None and current_price < latest_pivot_high:
@@ -281,4 +281,5 @@ def main_trading_loop():
 
 if __name__ == "__main__":
     main_trading_loop()
+
 
