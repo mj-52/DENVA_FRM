@@ -22,13 +22,12 @@ demo = True
 
 # Bot Settings
 min_payout = 60
-period = 60
-expiration = 60
+period = 300
+expiration = 300
 INITIAL_AMOUNT = 1
 MARTINGALE_LEVEL = 3
 PROB_THRESHOLD = 0.6
 
-# Only consider this pair (no space, matches PocketOption naming like 'GBPJPY')
 PAIR = "EURUSD"
 
 api = PocketOption(ssid, demo)
@@ -37,7 +36,7 @@ time.sleep(5)
 
 FEATURE_COLS = ['RSI', 'k_percent', 'r_percent', 'MACD', 'MACD_EMA', 'Price_Rate_Of_Change']
 
-def get_oanda_candles(pair, granularity="M1", count=500):
+def get_oanda_candles(pair, granularity="M5", count=500):
     try:
         client = oandapyV20.API(access_token=ACCESS_TOKEN)
         params = {"granularity": granularity, "count": count}
@@ -98,30 +97,28 @@ def prepare_data(df):
     df.reset_index(drop=True, inplace=True) 
     return df
 
-# def pivotid(df1, l, n1, n2):
-#     if l - n1 < 0 or l + n2 >= len(df1):
-#         return 0
-#     pividlow = 1
-#     pividhigh = 1
-#     for i in range(l - n1, l + n2 + 1):
-#         if df1.low[l] > df1.low[i]:
-#             pividlow = 0
-#         if df1.high[l] < df1.high[i]:
-#             pividhigh = 0
-#     if pividlow and pividhigh:
-#         return 3
-#     elif pividlow:
-#         return 1
-#     elif pividhigh:
-#         return 2
-#     else:
-#         return 0
+def pivotid(df1, l, n1, n2):
+    if l - n1 < 0 or l + n2 >= len(df1):
+        return 0
+    pividlow = 1
+    pividhigh = 1
+    for i in range(l - n1, l + n2 + 1):
+        if df1.low[l] > df1.low[i]:
+            pividlow = 0
+        if df1.high[l] < df1.high[i]:
+            pividhigh = 0
+    if pividlow and pividhigh:
+        return 3
+    elif pividlow:
+        return 1
+    elif pividhigh:
+        return 2
+    else:
+        return 0
 
 def train_and_predict(df):
     X_train = df[FEATURE_COLS].iloc[:-1]
     y_train = df['Prediction'].iloc[:-1]
-
-    # global_value.logger("📊 Latest data preview:\n" + str(df.shape), "INFO")
     model = RandomForestClassifier(n_estimators=100, oob_score=True, criterion="gini", random_state=0)
     model.fit(X_train, y_train)
 
@@ -132,38 +129,39 @@ def train_and_predict(df):
 
     latest_dir = df.iloc[-1]['SUPERTd_10_3.0']
     current_trend = df.iloc[-1]['SUPERT_10_3.0']
-    past_trend = df.iloc[-8]['SUPERT_10_3.0']
+    past_trend = df.iloc[-2]['SUPERT_10_3.0']
     rsi = df.iloc[-1]['RSI']
 
-    # # Calculate pivots
-    # df['pivot'] = df.apply(lambda x: pivotid(df, x.name, 10, 10), axis=1)
-    # # Find last pivot high before current candle
-    # pivot_highs = df[df['pivot'] == 2]
-    # if not pivot_highs.empty:
-    #     latest_pivot_high = pivot_highs.iloc[-1]['high']
-    # else:
-    #     latest_pivot_high = None
-    # # Find last pivot low before current candle
-    # pivot_lows = df[df['pivot'] == 1]
-    # if not pivot_lows.empty:
-    #     latest_pivot_low = pivot_lows.iloc[-1]['low']
-    # else:
-    #     latest_pivot_low = None
+    # Calculate pivots
+    df['pivot'] = df.apply(lambda x: pivotid(df, x.name, 10, 10), axis=1)
 
-    # current_price = df.iloc[-1]['close']
+    # Find last pivot high before current candle
+    pivot_highs = df[df['pivot'] == 2]
+    if not pivot_highs.empty:
+        latest_pivot_high = pivot_highs.iloc[-1]['high']
+    else:
+        latest_pivot_high = None
+    # Find last pivot low before current candle
+    pivot_lows = df[df['pivot'] == 1]
+    if not pivot_lows.empty:
+        latest_pivot_low = pivot_lows.iloc[-1]['low']
+    else:
+        latest_pivot_low = None
+
+    current_price = df.iloc[-1]['close']
 
     # Prevent trading in overbought/oversold markets
     if rsi > 70 or rsi < 30:
         global_value.logger(f"⏭️ Skipping trade due to RSI ({rsi:.2f}) being overbought/oversold.", "INFO")
         return None
 
-    # # Add trend check: skip if current trend != past trend
-    # if current_trend == past_trend:
-    #     global_value.logger(f"⏭️ Skipping trade due to flat trend (current: {current_trend}, past: {past_trend})", "INFO")
-    #     return None
+    # Add trend check: skip if current trend != past trend
+    if current_trend == past_trend:
+        global_value.logger(f"⏭️ Skipping trade due to flat trend (current: {current_trend}, past: {past_trend})", "INFO")
+        return None
 
     if call_conf > PROB_THRESHOLD:
-        if latest_dir == 1:# and latest_pivot_high is not None and current_price < latest_pivot_high:
+        if latest_dir == 1 and latest_pivot_high is not None and current_price < latest_pivot_high:
             decision = "call"
             emoji = "🟢"
             confidence = call_conf
@@ -171,7 +169,7 @@ def train_and_predict(df):
             global_value.logger(f"⏭️ Skipping CALL ({call_conf:.2%}) due to trend mismatch ", "INFO")
             return None
     elif put_conf > PROB_THRESHOLD:
-        if latest_dir == -1:# and latest_pivot_low is not None and current_price > latest_pivot_low:
+        if latest_dir == -1 and latest_pivot_low is not None and current_price > latest_pivot_low:
             decision = "put"
             emoji = "🔴"
             confidence = put_conf
@@ -214,7 +212,7 @@ def perform_trade(amount, pair, action, expiration):
             pass
         return None
 
-def wait_until_next_candle(period_seconds=300, seconds_before=30):
+def wait_until_next_candle(period_seconds=300, seconds_before=15):
     while True:
         now = datetime.now(timezone.utc)
         next_candle = ((now.timestamp() // period_seconds) + 1) * period_seconds
@@ -238,8 +236,8 @@ def main_trading_loop():
             time.sleep(5)
             continue
 
-        wait_until_next_candle(period_seconds=period, seconds_before=30)
-        global_value.logger("🕒 30 seconds before candle. Preparing data and predictions...", "INFO")
+        wait_until_next_candle(period_seconds=period, seconds_before=15)
+        global_value.logger("🕒 15 seconds before candle. Preparing data and predictions...", "INFO")
 
         selected_pair = None
         selected_action = None
@@ -272,6 +270,5 @@ def main_trading_loop():
 
 if __name__ == "__main__":
     main_trading_loop()
-
 
 
