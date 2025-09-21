@@ -28,8 +28,6 @@ INITIAL_AMOUNT = 1
 MARTINGALE_LEVEL = 3
 PROB_THRESHOLD = 0.6
 
-PAIR = "EURUSD"
-
 api = PocketOption(ssid, demo)
 api.connect()
 time.sleep(5)
@@ -270,5 +268,6 @@ def main_trading_loop():
 
 if __name__ == "__main__":
     main_trading_loop()
+
 
 
