@@ -33,6 +33,7 @@ api.connect()
 time.sleep(5)
 
 FEATURE_COLS = ['RSI', 'k_percent', 'r_percent', 'MACD', 'MACD_EMA', 'Price_Rate_Of_Change']
+PAIR = "EURUSD"
 
 def get_oanda_candles(pair, granularity="M5", count=500):
     try:
@@ -53,7 +54,7 @@ def get_oanda_candles(pair, granularity="M5", count=500):
     except Exception as e:
         global_value.logger(f"[ERROR]: OANDA candle fetch failed for {pair} ", "ERROR")
         return None
-
+    
 def get_payout():
     try:
         d = json.loads(global_value.PayoutData)
@@ -62,6 +63,12 @@ def get_payout():
             payout = pair[5]
             asset_type = pair[3]
             is_active = pair[14]
+
+            # Only look for the configured pair
+            if name != PAIR:
+                if name in global_value.pairs:
+                    del global_value.pairs[name]
+                continue
 
             if not name.endswith("_otc") and asset_type == "currency" and is_active:
                 if payout >= min_payout:
@@ -72,7 +79,6 @@ def get_payout():
     except Exception as e:
         global_value.logger(f"[ERROR]: Failed to parse payout data - {str(e)}", "ERROR")
         return False
-
 def prepare_data(df):
     df = df[['time', 'open', 'high', 'low', 'close']]
     df.rename(columns={'time': 'timestamp'}, inplace=True)
@@ -92,7 +98,7 @@ def prepare_data(df):
 
     df['Prediction'] = (df['close'].shift(-1) > df['close']).astype(int)
     df.dropna(inplace=True)
-    df.reset_index(drop=True, inplace=True) 
+    df.reset_index(drop=True, inplace=True)  # <-- Add this line
     return df
 
 def pivotid(df1, l, n1, n2):
@@ -117,6 +123,8 @@ def pivotid(df1, l, n1, n2):
 def train_and_predict(df):
     X_train = df[FEATURE_COLS].iloc[:-1]
     y_train = df['Prediction'].iloc[:-1]
+
+    # global_value.logger("📊 Latest data preview:\n" + str(df.shape), "INFO")
     model = RandomForestClassifier(n_estimators=100, oob_score=True, criterion="gini", random_state=0)
     model.fit(X_train, y_train)
 
@@ -132,7 +140,6 @@ def train_and_predict(df):
 
     # Calculate pivots
     df['pivot'] = df.apply(lambda x: pivotid(df, x.name, 10, 10), axis=1)
-
     # Find last pivot high before current candle
     pivot_highs = df[df['pivot'] == 2]
     if not pivot_highs.empty:
@@ -164,7 +171,7 @@ def train_and_predict(df):
             emoji = "🟢"
             confidence = call_conf
         else:
-            global_value.logger(f"⏭️ Skipping CALL ({call_conf:.2%}) due to trend mismatch ", "INFO")
+            global_value.logger(f"⏭️ Skipping CALL ({call_conf:.2%}) due to trend mismatch or price above pivot high.", "INFO")
             return None
     elif put_conf > PROB_THRESHOLD:
         if latest_dir == -1 and latest_pivot_low is not None and current_price > latest_pivot_low:
@@ -172,7 +179,7 @@ def train_and_predict(df):
             emoji = "🔴"
             confidence = put_conf
         else:
-            global_value.logger(f"⏭️ Skipping PUT ({put_conf:.2%}) due to trend mismatch ", "INFO")
+            global_value.logger(f"⏭️ Skipping PUT ({put_conf:.2%}) due to trend mismatch or price below pivot low.", "INFO")
             return None
     else:
         if call_conf > put_conf:
@@ -185,32 +192,43 @@ def train_and_predict(df):
     return decision
 
 def perform_trade(amount, pair, action, expiration):
-    """
-    Submit a single trade and do not wait for result. Returns trade id on success, None on failure.
-    """
-    try:
-        result = api.buy(amount=amount, active=pair, action=action, expirations=expiration)
-        trade_id = result[1]
+    result = api.buy(amount=amount, active=pair, action=action, expirations=expiration)
+    trade_id = result[1]
 
-        if result[0] is False or trade_id is None:
-            global_value.logger("❗Trade failed to execute. Attempting reconnection...", "ERROR")
-            api.disconnect()
-            time.sleep(2)
-            api.connect()
-            return None
-
-        return trade_id
-    except Exception as e:
-        global_value.logger(f"[ERROR]: Exception while placing trade - {e}", "ERROR")
-        try:
-            api.disconnect()
-            time.sleep(2)
-            api.connect()
-        except:
-            pass
+    if result[0] is False or trade_id is None:
+        global_value.logger("❗Trade failed to execute. Attempting reconnection...", "ERROR")
+        api.disconnect()
+        time.sleep(2)
+        api.connect()
         return None
 
-def wait_until_next_candle(period_seconds=300, seconds_before=15):
+    time.sleep(expiration)
+    return api.check_win(trade_id)
+
+def martingale_strategy(pair, action):
+    global current_profit
+
+    amount = INITIAL_AMOUNT
+    level = 1
+    result = perform_trade(amount, pair, action, expiration)
+
+    if result is None:
+        return
+
+    while result[1] == 'loose' and level < MARTINGALE_LEVEL:
+        level += 1
+        amount *= 2
+        result = perform_trade(amount, pair, action, expiration)
+
+        if result is None:
+            return
+        
+    if result[1] != 'loose':
+        global_value.logger("WIN - Resetting to base amount.", "INFO")
+    else:
+        global_value.logger("LOSS. Resetting.", "INFO")
+
+def wait_until_next_candle(period_seconds=300, seconds_before=5):
     while True:
         now = datetime.now(timezone.utc)
         next_candle = ((now.timestamp() // period_seconds) + 1) * period_seconds
@@ -234,8 +252,8 @@ def main_trading_loop():
             time.sleep(5)
             continue
 
-        wait_until_next_candle(period_seconds=period, seconds_before=15)
-        global_value.logger("🕒 15 seconds before candle. Preparing data and predictions...", "INFO")
+        wait_until_next_candle(period_seconds=period, seconds_before=5)
+        global_value.logger("🕒 5 seconds before candle. Preparing data and predictions...", "INFO")
 
         selected_pair = None
         selected_action = None
@@ -260,14 +278,12 @@ def main_trading_loop():
 
         if selected_pair and selected_action:
             global_value.logger(f"🚀 Executing trade on {selected_pair} - {selected_action.upper()}", "INFO")
-            trade_id = perform_trade(INITIAL_AMOUNT, selected_pair, selected_action, expiration)
+            martingale_strategy(selected_pair, selected_action)
         else:
             global_value.logger("⛔ No valid trading signal this cycle.", "INFO")
 
-        time.sleep(1)
+        # Optional: small pause before starting next cycle
+        time.sleep(2)
 
 if __name__ == "__main__":
     main_trading_loop()
-
-
-
